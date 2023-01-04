@@ -104,14 +104,14 @@ pub struct Material {
 
 pub trait AABB {
     fn gen_aabb(&self) -> Option<Box>;
-    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> bool;
+    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> Vec<(usize, bool)>;
 }
 
 #[derive(Debug, Clone)]
 pub struct BVH {
     aabb: Box,
     rel_pos: Vec3f,
-    content: Option<Vec<usize>>,
+    content: Option<Vec<(usize, usize)>>,
     childs: Option<Vec<Option<BVH>>>
 }
 
@@ -214,7 +214,7 @@ impl AABB for Box {
         Some(Box(self.0))
     }
 
-    fn check_in_aabb(&self, _aabb: &Box, _rel_pos: Vec3f) -> bool {
+    fn check_in_aabb(&self, _aabb: &Box, _rel_pos: Vec3f) -> Vec<(usize, bool)> {
         todo!()
     }
 }
@@ -224,7 +224,7 @@ impl AABB for Triangle {
         todo!()
     }
 
-    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> bool {
+    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> Vec<(usize, bool)> {
         let v0 = rel_pos + 0.5 * aabb.0;
         let v1 = rel_pos - 0.5 * aabb.0;
     
@@ -241,20 +241,29 @@ impl AABB for Triangle {
         };
 
         if vtx_in_aabb(self.0) || vtx_in_aabb(self.1) || vtx_in_aabb(self.2) {
-            return true;
+            return vec![(0, true)];
         }
     
-        false
+        vec![(0, false)]
     }
 }
 
 impl AABB for Sphere {
     fn gen_aabb(&self) -> Option<Box> {
-        Some(Box(Vec3f::from([self.0, self.0, self.0])))
+        Some(Box(Vec3f::from([2.0 * self.0, 2.0 * self.0, 2.0 * self.0])))
     }
 
-    fn check_in_aabb(&self, _aabb: &Box, _rel_pos: Vec3f) -> bool {
-        todo!()
+    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> Vec<(usize, bool)> {
+        let v0 = rel_pos + 0.5 * aabb.0;
+        let v1 = rel_pos - 0.5 * aabb.0;
+
+        let r = self.0;
+
+        if ((v0.x > r && v1.x > r) || (v0.x < -r && v1.x < -r)) || ((v0.y > r && v1.y > r) || (v0.y < -r && v1.y < -r)) || ((v0.z > r && v1.z > r) || (v0.z < -r && v1.z < -r)) {
+            return vec![(0, false)]
+        }
+
+        vec![(0, true)]
     }
 }
 
@@ -269,29 +278,55 @@ impl AABB for Mesh {
         ])))    
     }
 
-    fn check_in_aabb(&self, _aabb: &Box, _rel_pos: Vec3f) -> bool {
+    fn check_in_aabb(&self, _aabb: &Box, _rel_pos: Vec3f) -> Vec<(usize, bool)> {
         todo!()
     }
 }
 
-impl AABB for RendererKind {
-    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> bool {
-        match self {
-            RendererKind::Box(b) => b.check_in_aabb(aabb, rel_pos),
-            RendererKind::Sphere(sph) => sph.check_in_aabb(aabb, rel_pos),
-            RendererKind::Triangle(tri) => tri.check_in_aabb(aabb, rel_pos),
-            RendererKind::Mesh(mesh) => mesh.check_in_aabb(aabb, rel_pos),
-            _ => false
-        }
+impl AABB for Renderer {
+    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> Vec<(usize, bool)> {
+        self.instance.iter().enumerate().map(|(idx, inst)| {
+
+            let check = match &self.kind {
+                RendererKind::Box(b) => b.check_in_aabb(aabb, rel_pos - inst.pos)[0].1,
+                RendererKind::Sphere(sph) => sph.check_in_aabb(aabb, rel_pos - inst.pos)[0].1,
+                RendererKind::Triangle(tri) => tri.check_in_aabb(aabb, rel_pos - inst.pos)[0].1,
+                RendererKind::Mesh(mesh) => mesh.check_in_aabb(aabb, rel_pos - inst.pos)[0].1,
+                _ => false
+            };
+
+            (idx, check)
+        }).collect()
     }
 
     fn gen_aabb(&self) -> Option<Box> {
-        match self {
+        match &self.kind {
             RendererKind::Box(b) => b.gen_aabb(),
             RendererKind::Sphere(sph) => sph.gen_aabb(),
             RendererKind::Triangle(tri) => tri.gen_aabb(),
             RendererKind::Mesh(mesh) => mesh.gen_aabb(),
             _ => None
+        }
+    }
+}
+
+impl AABB for Vec<Renderer> {
+    fn check_in_aabb(&self, aabb: &Box, rel_pos: Vec3f) -> Vec<(usize, bool)> {
+        todo!()
+    }
+
+    fn gen_aabb(&self) -> Option<Box> {
+        let max_min = self.iter()
+            .filter_map(|r| r.aabb.as_ref().map(|_| r))
+            .flat_map(|r| r.instance.iter().map(|inst| (inst.pos - 0.5 * r.aabb.clone().unwrap().0, inst.pos + 0.5 * r.aabb.clone().unwrap().0)));
+
+        let min = max_min.clone().min_by(|a, b| a.0.min().total_cmp(&b.0.min())).map(|(min, _)| min)?.abs();
+        let max = max_min.max_by(|a, b| a.1.max().total_cmp(&b.1.max())).map(|(_, max)| max)?.abs();
+
+        if max.max() > min.max() {
+            return Some(Box(2.0 * max))
+        } else {
+            return Some(Box(2.0 * min))
         }
     }
 }
@@ -321,8 +356,8 @@ impl Intersect for Box {
         let a = -n - k;
         let b = -n + k;
 
-        let t0 = a.x.max(a.y).max(a.z);
-        let t1 = b.x.min(b.y).min(b.z);
+        let t0 = a.max();
+        let t1 = b.min();
 
         if t0 > t1 || t1 < 0.0 {
             return None
@@ -334,6 +369,7 @@ impl Intersect for Box {
 
 impl Intersect for Sphere {
     type Output = (f32, f32);
+
     fn intersect(&self, ray: &Ray, pos: Vec3f) -> Option<Self::Output> {
         let o = ray.orig - pos;
 
@@ -628,6 +664,24 @@ impl Texture {
 }
 
 impl BVH {
+    fn intersect(rel_pos: Vec3f, ray: &Ray, bvh: &BVH) -> Option<Vec<(usize, usize)>> {
+        if bvh.aabb.intersect(ray, rel_pos + bvh.rel_pos).is_none() {
+            return None;
+        }
+
+        if bvh.content.is_some() {
+            return bvh.content.clone();
+        }
+
+        Some(
+            bvh.childs.as_ref().unwrap()
+                .iter()
+                .filter_map(|c| c.as_ref())
+                .filter_map(|c| BVH::intersect(rel_pos, ray, c))
+                .flat_map(|v| v).collect()
+        )
+    }
+
     fn construct<T: AABB>(aabb: Box, rel_pos: Vec3f, objs: &Vec<T>, d: usize, deep: usize, gen_pos: fn() -> [Vec3f; 8]) -> Option<BVH> {
         let mut child = BVH {
             aabb: aabb,
@@ -640,9 +694,10 @@ impl BVH {
         if d >= deep {
             let tmp = objs.iter()
                 .enumerate()
-                .filter_map(|(idx, obj)| {
-                    if obj.check_in_aabb(&child.aabb, child.rel_pos) {
-                        return Some(idx)
+                .flat_map(|(idx, obj)| std::iter::repeat(idx).zip(obj.check_in_aabb(&child.aabb, child.rel_pos)))
+                .filter_map(|(idx, (subidx, check))| {
+                    if check {
+                        return Some((idx, subidx))
                     }
                     None
                 })
@@ -704,24 +759,6 @@ impl BVH {
 
 
 impl Renderer {
-    fn intersect_bvh(&self, inst: &RendererInstance, ray: &Ray, bvh: &BVH) -> Option<Vec<usize>> {
-        if bvh.aabb.intersect(ray, inst.pos + bvh.rel_pos).is_none() {
-            return None;
-        }
-
-        if bvh.content.is_some() {
-            return bvh.content.clone();
-        }
-
-        Some(
-            bvh.childs.as_ref().unwrap()
-                .iter()
-                .filter_map(|c| c.as_ref())
-                .filter_map(|c| self.intersect_bvh(inst, ray, c))
-                .flat_map(|v| v).collect()
-        )
-    }
-
     pub fn intersect(&self, inst: &RendererInstance, ray: &Ray) -> Option<((f32, Option<usize>), (f32, Option<usize>))> {
         let rot_y = Mat3f::rotate_y(-inst.dir);
         let look = Mat4f::lookat(-inst.dir, Vec3f::up());
@@ -740,9 +777,9 @@ impl Renderer {
             RendererKind::Mesh(ref mesh) => {
                 // get indexes
                 let bvh_idx = if let Some(ref bvh) = mesh.bvh {
-                    self.intersect_bvh(inst, &n_ray, bvh)
+                    BVH::intersect(inst.pos, &n_ray, bvh)
                 } else {
-                    Some((0..mesh.mesh.len()).collect())
+                    Some((0..mesh.mesh.len()).zip(std::iter::repeat(0)).collect())
                 };
 
                 if bvh_idx.is_none() {
@@ -753,9 +790,11 @@ impl Renderer {
                 let mut hits = Vec::new();
 
                 let mut bvh_idx = bvh_idx.unwrap();
+
+                bvh_idx.sort();
                 bvh_idx.dedup();
 
-                for idx in bvh_idx {
+                for (idx, _) in bvh_idx {
                     if let Some(t) = mesh.mesh[idx].intersect(&n_ray, inst.pos) {
                         hits.push(((t, Some(idx)), (t, Some(idx))));
                     }
@@ -865,11 +904,48 @@ impl Renderer {
 
 impl RayTracer {
     fn closest_hit<'a>(scene: &'a Scene, ray: &Ray) -> Option<(RayHit<'a>, RayHit<'a>)> {
-        let hits = scene.renderer.as_deref()?.iter()
-            .flat_map(|obj| std::iter::repeat(obj).zip(obj.instance.iter().map(|inst| (inst, obj.intersect(inst, &ray)))))
-            .filter_map(|(obj, (inst, p))| Some((obj, inst, p?.0, p?.1)));
+        // get indexes
+        let bvh_idx = if let Some(ref bvh) = scene.renderer_bvh {
+            BVH::intersect(Vec3f::zero(), ray, bvh)
+        } else {
+            if let Some(objs) = scene.renderer.as_deref() {
+                Some(
+                    objs.iter().enumerate()
+                    .flat_map(|(idx, obj)| std::iter::repeat(idx).zip(0..obj.instance.len())).collect::<Vec<_>>()
+                )
+            } else {
+                None
+            }
+        };
 
-        hits.min_by(|(_, _, (max, _), _), (_, _, (p, _), _)| max.total_cmp(&p)).and_then(|v| {
+        if bvh_idx.is_none() {
+            return None;
+        }
+
+        // check intersections
+        let mut bvh_idx = bvh_idx.unwrap();
+
+        bvh_idx.sort();
+        bvh_idx.dedup();
+
+        let mut hits = Vec::new();
+
+        for (idx, subidx) in bvh_idx {
+            let obj = &scene.renderer.as_deref()?[idx];
+            let inst = &obj.instance[subidx];
+
+            let hit = obj.intersect(inst, ray);
+
+            if let Some(hit) = hit {
+                hits.push((obj, inst, hit.0, hit.1));
+            }
+        }
+
+        // let hits = scene.renderer.as_deref()?.iter()
+        //     .flat_map(|obj| std::iter::repeat(obj).zip(obj.instance.iter().map(|inst| (inst, obj.intersect(inst, &ray)))))
+        //     .filter_map(|(obj, (inst, p))| Some((obj, inst, p?.0, p?.1)));
+
+        hits.iter().min_by(|(_, _, (max, _), _), (_, _, (p, _), _)| max.total_cmp(&p)).and_then(|v| {
             let r0 = Ray {t: v.2.0, ..ray.clone()};
             let r1 = Ray {t: v.3.0, ..ray.clone()};
 

@@ -852,14 +852,16 @@ impl Wrapper<Renderer> for RendererWrapper {
             ]
         };
 
-        let kind = self.kind.unwrap()?;
-
-        Ok(Renderer{
-            aabb: kind.gen_aabb(),
-            kind: kind,
+        let mut renderer = Renderer{
+            kind: self.kind.unwrap()?,
+            aabb: None,
             mat: self.mat.unwrap()?,
             instance: instance
-        })
+        };
+
+        renderer.aabb = renderer.gen_aabb();
+
+        Ok(renderer)
     }
 }
 
@@ -917,12 +919,32 @@ impl Wrapper<Vec<Light>> for Vec<LightWrapper> {
 
 impl Wrapper<Scene> for SceneWrapper {
     fn unwrap(self) -> Result<Scene, String> {
-        Ok(Scene {
-            renderer: if let Some(objs) = self.renderer {Some(objs.unwrap()?)} else {None},
+        let mut scene = Scene {
+            renderer: None,
             renderer_bvh: None,
-            light: if let Some(lights) = self.light {Some(lights.unwrap()?)} else {None},
+            light: None,
             sky: self.sky.unwrap()?
-        })
+        };
+
+        if let Some(objs) = self.renderer {
+            let mut objs = objs.unwrap()?;
+
+            for obj in &mut objs {
+                obj.aabb = obj.gen_aabb();
+            }
+
+            if let Some(aabb) = objs.gen_aabb() {
+                // scene.renderer_bvh = BVH::gen(aabb, &objs, 3);
+            }
+
+            scene.renderer = Some(objs);
+        }
+
+        if let Some(lights) = self.light {
+            scene.light = Some(lights.unwrap()?);
+        }
+
+        Ok(scene)
     }
 }
 

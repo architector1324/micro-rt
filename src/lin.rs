@@ -85,6 +85,14 @@ impl Vec3f {
         }
     }
 
+    pub fn min(&self) -> f32 {
+        self.x.min(self.y).min(self.z)
+    }
+
+    pub fn max(&self) -> f32 {
+        self.x.max(self.y).max(self.z)
+    }
+
     pub fn clamp(self, min: f32, max: f32) -> Self {
         Vec3f {
             x: self.x.clamp(min, max),
